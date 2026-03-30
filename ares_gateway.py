@@ -3,8 +3,7 @@
 ARES Bio.OS — HTTP API Gateway for Cloud Run
 
 Lightweight FastAPI wrapper that exposes the Hermes Agent as an HTTP API.
-This is the Cloud Run entrypoint — NOT the Hermes CLI gateway (which is for
-messaging platforms like Telegram/Discord).
+Uses NousResearch Direct API (not OpenRouter) for lowest latency.
 
 Endpoints:
   POST /v1/chat        — Send a message to ARES (with MCP tool access)
@@ -27,24 +26,29 @@ from fastapi.responses import StreamingResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
-# ── Hermes Agent core imports ────────────────────────────────────────────
-try:
-    from run_agent import (
-        run_agent_turn,
-        build_system_prompt,
-        get_model_config,
-    )
-    HERMES_AVAILABLE = True
-except ImportError:
-    HERMES_AVAILABLE = False
-    logging.warning("Hermes agent core not available — running in stub mode")
-
 # ── Config ───────────────────────────────────────────────────────────────
+# Primary: NousResearch Direct API (lowest latency, no middleman)
+# Fallback: OpenRouter (if NOUS key not available)
+NOUS_API_KEY = os.environ.get("NOUS_API_KEY", "")
+OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY", "")
 MCP_SERVER_URL = os.environ.get("ARES_MCP_SERVER_URL", "")
 SUPABASE_ANON_KEY = os.environ.get("SUPABASE_ANON_KEY", "")
-OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY", "")
 PORT = int(os.environ.get("PORT", "8080"))
 MODEL = os.environ.get("HERMES_MODEL", "nousresearch/hermes-4-405b")
+
+# API routing: prefer NousResearch direct, fall back to OpenRouter
+if NOUS_API_KEY:
+    LLM_BASE_URL = "https://inference-api.nousresearch.com/v1"
+    LLM_API_KEY = NOUS_API_KEY
+    LLM_PROVIDER = "nousresearch_direct"
+elif OPENROUTER_API_KEY:
+    LLM_BASE_URL = "https://openrouter.ai/api/v1"
+    LLM_API_KEY = OPENROUTER_API_KEY
+    LLM_PROVIDER = "openrouter"
+else:
+    LLM_BASE_URL = ""
+    LLM_API_KEY = ""
+    LLM_PROVIDER = "none"
 
 logger = logging.getLogger("ares-gateway")
 logging.basicConfig(level=logging.INFO)
@@ -60,27 +64,23 @@ class AresMCPClient:
         self._tools_cache = None
 
     async def initialize(self, jwt: str) -> dict:
-        """Initialize MCP session and cache tool list."""
         resp = await self._rpc("initialize", {}, jwt)
         tools_resp = await self._rpc("tools/list", {}, jwt)
         self._tools_cache = tools_resp.get("tools", [])
         return resp
 
     async def list_tools(self, jwt: str) -> list:
-        """Return cached tools or fetch fresh."""
         if self._tools_cache is None:
             await self.initialize(jwt)
         return self._tools_cache or []
 
     async def call_tool(self, name: str, arguments: dict, jwt: str) -> dict:
-        """Call an MCP tool and return result."""
         return await self._rpc("tools/call", {
             "name": name,
             "arguments": arguments,
         }, jwt)
 
     async def _rpc(self, method: str, params: dict, jwt: str) -> dict:
-        """Send JSON-RPC 2.0 request to MCP server."""
         try:
             resp = await self.client.post(
                 self.base_url,
@@ -131,8 +131,9 @@ class ChatRequest(BaseModel):
 async def lifespan(app: FastAPI):
     logger.info(f"🚀 ARES Hermes Gateway starting on port {PORT}")
     logger.info(f"   Model: {MODEL}")
+    logger.info(f"   LLM Provider: {LLM_PROVIDER}")
+    logger.info(f"   LLM Base URL: {LLM_BASE_URL}")
     logger.info(f"   MCP Server: {MCP_SERVER_URL or 'NOT CONFIGURED'}")
-    logger.info(f"   Hermes core: {'available' if HERMES_AVAILABLE else 'STUB MODE'}")
     yield
     if mcp_client:
         await mcp_client.close()
@@ -159,57 +160,76 @@ async def health():
         "status": "healthy",
         "service": "ares-hermes-agent",
         "model": MODEL,
+        "llm_provider": LLM_PROVIDER,
         "mcp_configured": bool(MCP_SERVER_URL),
-        "hermes_available": HERMES_AVAILABLE,
+        "llm_configured": bool(LLM_API_KEY),
     }
 
 @app.get("/v1/tools")
 async def list_tools(authorization: str = Header(default="")):
-    """List available MCP tools."""
     if not mcp_client:
         return {"tools": [], "error": "MCP not configured"}
     jwt = authorization.replace("Bearer ", "")
     tools = await mcp_client.list_tools(jwt)
     return {"tools": tools}
 
-@app.post("/v1/chat")
-async def chat(req: ChatRequest):
-    """Send a chat message to ARES Hermes Agent."""
-    model = req.model or MODEL
+def _build_llm_headers() -> dict:
+    """Build headers for LLM API call based on provider."""
+    headers = {
+        "Authorization": f"Bearer {LLM_API_KEY}",
+        "Content-Type": "application/json",
+    }
+    if LLM_PROVIDER == "openrouter":
+        headers["HTTP-Referer"] = "https://app.bio-os.io"
+        headers["X-Title"] = "ARES Bio.OS"
+    return headers
 
-    # Build enriched system prompt with MCP context
-    system_context = ""
-    if req.use_mcp and mcp_client:
-        try:
-            # Auto-fetch fact snapshot for context
-            snapshot = await mcp_client.call_tool("get_fact_snapshot", {}, req.user_jwt)
-            if snapshot and "error" not in snapshot:
-                system_context = f"\n\n## Current User Data Inventory\n```json\n{json.dumps(snapshot, indent=2, default=str)[:4000]}\n```"
-        except Exception as e:
-            logger.warning(f"Failed to fetch fact snapshot: {e}")
+async def _enrich_with_mcp(user_jwt: str) -> str:
+    """Fetch fact snapshot from MCP to enrich system context."""
+    if not mcp_client:
+        return ""
+    try:
+        snapshot = await mcp_client.call_tool("get_fact_snapshot", {}, user_jwt)
+        if snapshot and "error" not in snapshot:
+            return f"\n\n## Current User Data Inventory\n```json\n{json.dumps(snapshot, indent=2, default=str)[:4000]}\n```"
+    except Exception as e:
+        logger.warning(f"Failed to fetch fact snapshot: {e}")
+    return ""
 
-    # Build messages for LLM
-    messages = []
-    for msg in req.messages:
+def _build_messages(messages: list[ChatMessage], system_context: str) -> list[dict]:
+    """Build LLM message array with system context enrichment."""
+    result = []
+    has_system = False
+    for msg in messages:
         if msg.role == "system":
-            messages.append({"role": "system", "content": msg.content + system_context})
+            result.append({"role": "system", "content": msg.content + system_context})
+            has_system = True
         else:
-            messages.append({"role": msg.role, "content": msg.content})
+            result.append({"role": msg.role, "content": msg.content})
 
-    # If no system message, prepend ARES system prompt
-    if not any(m["role"] == "system" for m in messages):
+    if not has_system:
         soul_path = os.path.join(os.environ.get("HERMES_HOME", "/opt/data"), "SOUL.md")
         soul = ""
         if os.path.exists(soul_path):
             with open(soul_path) as f:
                 soul = f.read()
-        messages.insert(0, {"role": "system", "content": soul + system_context})
+        result.insert(0, {"role": "system", "content": soul + system_context})
 
-    # Call LLM via OpenRouter (OpenAI-compatible API)
+    return result
+
+@app.post("/v1/chat")
+async def chat(req: ChatRequest):
+    if not LLM_API_KEY:
+        raise HTTPException(status_code=503, detail="No LLM API key configured")
+
+    model = req.model or MODEL
+    system_context = await _enrich_with_mcp(req.user_jwt) if req.use_mcp else ""
+    messages = _build_messages(req.messages, system_context)
+
     try:
         async with httpx.AsyncClient(timeout=120) as client:
             resp = await client.post(
-                "https://openrouter.ai/api/v1/chat/completions",
+                f"{LLM_BASE_URL}/chat/completions",
                 json={
                     "model": model,
                     "messages": messages,
@@ -217,12 +237,7 @@ async def chat(req: ChatRequest):
                     "max_tokens": req.max_tokens,
                     "stream": False,
                 },
-                headers={
-                    "Authorization": f"Bearer {OPENROUTER_API_KEY}",
-                    "Content-Type": "application/json",
-                    "HTTP-Referer": "https://app.bio-os.io",
-                    "X-Title": "ARES Bio.OS",
-                },
+                headers=_build_llm_headers(),
             )
             data = resp.json()
             if resp.status_code != 200:
@@ -234,7 +249,7 @@ async def chat(req: ChatRequest):
                 "content": choice["message"]["content"],
                 "model": data.get("model", model),
                 "usage": data.get("usage"),
-                "provider": "hermes_agent",
+                "provider": LLM_PROVIDER,
                 "mcp_enriched": bool(system_context),
             }
     except httpx.TimeoutException:
@@ -242,39 +257,18 @@ async def chat(req: ChatRequest):
 
 @app.post("/v1/chat/stream")
 async def chat_stream(req: ChatRequest):
-    """Stream a chat response from ARES Hermes Agent via SSE."""
+    if not LLM_API_KEY:
+        raise HTTPException(status_code=503, detail="No LLM API key configured")
+
     model = req.model or MODEL
-
-    # Build enriched context (same as non-streaming)
-    system_context = ""
-    if req.use_mcp and mcp_client:
-        try:
-            snapshot = await mcp_client.call_tool("get_fact_snapshot", {}, req.user_jwt)
-            if snapshot and "error" not in snapshot:
-                system_context = f"\n\n## Current User Data Inventory\n```json\n{json.dumps(snapshot, indent=2, default=str)[:4000]}\n```"
-        except Exception:
-            pass
-
-    messages = []
-    for msg in req.messages:
-        if msg.role == "system":
-            messages.append({"role": "system", "content": msg.content + system_context})
-        else:
-            messages.append({"role": msg.role, "content": msg.content})
-
-    if not any(m["role"] == "system" for m in messages):
-        soul_path = os.path.join(os.environ.get("HERMES_HOME", "/opt/data"), "SOUL.md")
-        soul = ""
-        if os.path.exists(soul_path):
-            with open(soul_path) as f:
-                soul = f.read()
-        messages.insert(0, {"role": "system", "content": soul + system_context})
+    system_context = await _enrich_with_mcp(req.user_jwt) if req.use_mcp else ""
+    messages = _build_messages(req.messages, system_context)
 
     async def event_stream():
         async with httpx.AsyncClient(timeout=120) as client:
             async with client.stream(
                 "POST",
-                "https://openrouter.ai/api/v1/chat/completions",
+                f"{LLM_BASE_URL}/chat/completions",
                 json={
                     "model": model,
                     "messages": messages,
@@ -282,12 +276,7 @@ async def chat_stream(req: ChatRequest):
                     "max_tokens": req.max_tokens,
                     "stream": True,
                 },
-                headers={
-                    "Authorization": f"Bearer {OPENROUTER_API_KEY}",
-                    "Content-Type": "application/json",
-                    "HTTP-Referer": "https://app.bio-os.io",
-                    "X-Title": "ARES Bio.OS",
-                },
+                headers=_build_llm_headers(),
             ) as resp:
                 if resp.status_code != 200:
                     err = await resp.aread()
