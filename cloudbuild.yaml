@@ -1,0 +1,58 @@
+# ═══════════════════════════════════════════════════════════════════════════════
+# ARES Bio.OS — Cloud Build Config for Cloud Run Deployment
+# Project: ares-488111
+# ═══════════════════════════════════════════════════════════════════════════════
+
+steps:
+  # Build using the Cloud Run optimized Dockerfile
+  - name: 'gcr.io/cloud-builders/docker'
+    args:
+      - 'build'
+      - '-f'
+      - 'Dockerfile.cloudrun'
+      - '-t'
+      - 'europe-west1-docker.pkg.dev/$PROJECT_ID/ares-hermes/hermes-agent:$SHORT_SHA'
+      - '-t'
+      - 'europe-west1-docker.pkg.dev/$PROJECT_ID/ares-hermes/hermes-agent:latest'
+      - '.'
+
+  # Push to Artifact Registry
+  - name: 'gcr.io/cloud-builders/docker'
+    args:
+      - 'push'
+      - '--all-tags'
+      - 'europe-west1-docker.pkg.dev/$PROJECT_ID/ares-hermes/hermes-agent'
+
+  # Deploy to Cloud Run
+  - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
+    entrypoint: 'gcloud'
+    args:
+      - 'run'
+      - 'deploy'
+      - 'ares-hermes-agent'
+      - '--image'
+      - 'europe-west1-docker.pkg.dev/$PROJECT_ID/ares-hermes/hermes-agent:$SHORT_SHA'
+      - '--platform'
+      - 'managed'
+      - '--region'
+      - 'europe-west1'
+      - '--memory'
+      - '2Gi'
+      - '--cpu'
+      - '2'
+      - '--timeout'
+      - '300s'
+      - '--max-instances'
+      - '3'
+      - '--min-instances'
+      - '0'
+      - '--allow-unauthenticated'
+      - '--set-env-vars'
+      - 'ARES_MCP_SERVER_URL=https://gzczjscctgyxjyodhnhk.supabase.co/functions/v1/ares-mcp-server'
+
+images:
+  - 'europe-west1-docker.pkg.dev/$PROJECT_ID/ares-hermes/hermes-agent:$SHORT_SHA'
+  - 'europe-west1-docker.pkg.dev/$PROJECT_ID/ares-hermes/hermes-agent:latest'
+
+options:
+  logging: CLOUD_LOGGING_ONLY

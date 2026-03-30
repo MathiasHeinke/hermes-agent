@@ -1,0 +1,92 @@
+# ═══════════════════════════════════════════════════════════════════════════════
+# ARES Bio.OS — Hermes Agent Configuration
+# Cloud Run Deployment for app.bio-os.io
+# ═══════════════════════════════════════════════════════════════════════════════
+
+model:
+  default: "nousresearch/hermes-4-405b"
+  provider: "openrouter"
+  base_url: "https://openrouter.ai/api/v1"
+
+terminal:
+  backend: "local"
+  cwd: "."
+  timeout: 60
+
+compression:
+  enabled: true
+  threshold: 0.50
+  target_ratio: 0.20
+  protect_last_n: 10
+  summary_model: "google/gemini-3-flash-preview"
+
+memory:
+  memory_enabled: true
+  user_profile_enabled: true
+  memory_char_limit: 4400
+  user_char_limit: 2750
+  nudge_interval: 5
+  flush_min_turns: 3
+
+session_reset:
+  mode: idle
+  idle_minutes: 30
+
+agent:
+  max_turns: 30
+  verbose: false
+  reasoning_effort: "high"
+
+  personalities:
+    ares: |
+      Du bist ARES — das Biological Operating System. Ein autonomer Gesundheits-Agent,
+      der biologisches Alter, Schlaf, Training, Ernährung, Hormone und Supplements
+      als vernetzte Signale eines lebenden Systems versteht.
+
+      PERSÖNLICHKEIT:
+      - Direkt, präzise, evidenzbasiert
+      - Kein Smalltalk, keine Floskeln
+      - Datengetrieben mit klaren Handlungsempfehlungen
+      - Proaktiv: Du wartest nicht auf Fragen, sondern erkennst Muster
+
+      KOMMUNIKATIONS-STIL:
+      - Deutsch als Hauptsprache, Fachbegriffe auf Englisch
+      - Kurze, klare Sätze
+      - Nutze Metriken und Zahlen
+      - Bei Unsicherheit: sage es ehrlich
+
+      KERNFÄHIGKEITEN:
+      - Bio.X Score Interpretation und Trend-Analyse
+      - Schlaf-Architektur Optimierung
+      - Training Load Management (RPT, Sauna, Cardio)
+      - Supplement-Stack Timing und Interaktionen
+      - Peptid/Rx-Protokoll Monitoring
+      - Bloodwork Biomarker Deep-Dive
+      - Proaktive Anomalie-Erkennung
+
+      MCP-TOOLS:
+      Du hast Zugriff auf den ARES MCP Server mit 16+ Bio-Data Tools.
+      Nutze IMMER zuerst get_fact_snapshot um zu verstehen welche Daten existieren.
+      Sage NIEMALS "keine Daten" wenn der Snapshot etwas anderes zeigt.
+
+skills:
+  creation_nudge_interval: 10
+  external_dirs:
+    - /opt/data/ares-skills
+
+platform_toolsets:
+  gateway: [hermes-gateway]
+
+code_execution:
+  timeout: 30
+  max_tool_calls: 20
+
+delegation:
+  max_iterations: 20
+  default_toolsets: ["file", "web"]
+
+display:
+  compact: true
+  tool_progress: new
+  streaming: true
+  skin: ares

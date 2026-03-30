@@ -1,0 +1,45 @@
+# ═══════════════════════════════════════════════════════════════════════════════
+# ARES Bio.OS — Hermes Agent Cloud Run Dockerfile
+# Optimized for stateless HTTP gateway serving
+# ═══════════════════════════════════════════════════════════════════════════════
+
+FROM python:3.12-slim AS builder
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    gcc python3-dev libffi-dev git curl && \
+    rm -rf /var/lib/apt/lists/*
+
+WORKDIR /opt/hermes
+COPY requirements.txt pyproject.toml ./
+RUN pip install --no-cache-dir -r requirements.txt
+
+# ── Runtime Stage ────────────────────────────────────────────────────────────
+FROM python:3.12-slim
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ripgrep && \
+    rm -rf /var/lib/apt/lists/*
+
+WORKDIR /opt/hermes
+COPY --from=builder /usr/local/lib/python3.12/site-packages /usr/local/lib/python3.12/site-packages
+COPY --from=builder /usr/local/bin /usr/local/bin
+
+COPY . /opt/hermes
+
+# ── ARES Config ──────────────────────────────────────────────────────────────
+RUN mkdir -p /opt/data/skills /opt/data/memories /opt/data/sessions /opt/data/logs
+RUN cp /opt/hermes/configs/ares.yaml /opt/data/config.yaml
+RUN cp /opt/hermes/configs/ares-soul.md /opt/data/SOUL.md
+
+ENV HERMES_HOME=/opt/data
+ENV PORT=8080
+ENV PYTHONUNBUFFERED=1
+
+# MCP Server URL (injected at deploy-time)
+ENV ARES_MCP_SERVER_URL=""
+ENV OPENROUTER_API_KEY=""
+
+EXPOSE 8080
+
+# Cloud Run: Start gateway in HTTP mode on $PORT
+CMD ["hermes", "gateway", "--port", "8080", "--host", "0.0.0.0"]
