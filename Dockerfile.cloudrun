@@ -1,17 +1,20 @@
 # ═══════════════════════════════════════════════════════════════════════════════
 # ARES Bio.OS — Hermes Agent Cloud Run Dockerfile
-# Optimized for stateless HTTP gateway serving
+# Optimized for stateless HTTP gateway serving via FastAPI
 # ═══════════════════════════════════════════════════════════════════════════════
 
 FROM python:3.12-slim AS builder
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    gcc python3-dev libffi-dev git curl && \
+    gcc python3-dev libffi-dev git && \
     rm -rf /var/lib/apt/lists/*
 
 WORKDIR /opt/hermes
 COPY requirements.txt pyproject.toml ./
-RUN pip install --no-cache-dir -r requirements.txt
+
+# Install core deps + FastAPI/Uvicorn for HTTP gateway
+RUN pip install --no-cache-dir -r requirements.txt && \
+    pip install --no-cache-dir fastapi uvicorn[standard] httpx
 
 # ── Runtime Stage ────────────────────────────────────────────────────────────
 FROM python:3.12-slim
@@ -27,7 +30,7 @@ COPY --from=builder /usr/local/bin /usr/local/bin
 COPY . /opt/hermes
 
 # ── ARES Config ──────────────────────────────────────────────────────────────
-RUN mkdir -p /opt/data/skills /opt/data/memories /opt/data/sessions /opt/data/logs
+RUN mkdir -p /opt/data/skills /opt/data/memories /opt/data/sessions /opt/data/logs /opt/data/ares-skills
 RUN cp /opt/hermes/configs/ares.yaml /opt/data/config.yaml
 RUN cp /opt/hermes/configs/ares-soul.md /opt/data/SOUL.md
 
@@ -35,11 +38,12 @@ ENV HERMES_HOME=/opt/data
 ENV PORT=8080
 ENV PYTHONUNBUFFERED=1
 
-# MCP Server URL (injected at deploy-time)
+# MCP Server URL + API keys (injected at deploy-time via Cloud Run secrets)
 ENV ARES_MCP_SERVER_URL=""
 ENV OPENROUTER_API_KEY=""
+ENV SUPABASE_ANON_KEY=""
 
 EXPOSE 8080
 
-# Cloud Run: Start gateway in HTTP mode on $PORT
-CMD ["hermes", "gateway", "--port", "8080", "--host", "0.0.0.0"]
+# Cloud Run: Start FastAPI gateway on $PORT
+CMD ["python", "ares_gateway.py"]
