@@ -306,6 +306,12 @@ export class VoiceLiveSession {
       audio: { autoGainControl: true, echoCancellation: true, noiseSuppression: true }
     })
 
+    if (this.finalized) {
+      this.microphone.getTracks().forEach(track => track.stop())
+
+      return
+    }
+
     for (const track of this.microphone.getAudioTracks()) {
       connection.addTrack(track, this.microphone)
     }
