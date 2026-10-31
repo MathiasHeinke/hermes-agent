@@ -12,8 +12,14 @@
  * — where OAuth expiry actually lives) are swept, sequentially, and through
  * the same probe cache the MCP page uses so neither surface re-probes what
  * the other just learned.
+ *
+ * A server the gateway reports as connected is recorded ok without a probe,
+ * and one still connecting is left alone. A connected runtime session is not
+ * a fresh OAuth check, so an expired token on a live session surfaces only
+ * once the runtime drops it (its own keepalive) or a manual probe runs.
  */
 
+import { mcpServerStatus } from '@/app/capabilities/connectors/data/rpc'
 import { getHermesConfigRecord, type McpTestResult, setMcpServerEnabled, testMcpServer } from '@/hermes'
 import { translateNow } from '@/i18n'
 import { classifyProbe, freshProbe, probeCache, probeKey } from '@/lib/mcp-probe-cache'
@@ -87,8 +93,10 @@ const lastStatus = new Map<string, McpHealthStatus>()
 
 let started = false
 let timer: ReturnType<typeof setInterval> | null = null
-// Bumped on profile switch; in-flight sweeps compare and bail so a slow
-// profile-A probe can't record (or notify) into profile B's state.
+// Bumped on profile switch and whenever the gateway leaves 'open'; in-flight
+// sweeps compare and bail so a slow profile-A probe can't record (or notify)
+// into profile B's state, and a snapshot from a dropped connection can't be
+// recorded after a reconnect.
 let sweepEpoch = 0
 // At most one sweep runs and one follow-up is remembered. Reconnect storms
 // still request a fresh pass, but cannot append an unbounded backlog.
@@ -150,9 +158,49 @@ function recordResult(profileKey: string, name: string, status: McpHealthStatus)
 const isUrlServer = (server: Record<string, unknown>): boolean =>
   typeof server.url === 'string' && serverEnabled(server)
 
+type RuntimeState = 'connected' | 'connecting'
+
+// Only a well-formed row may skip a probe; anything else falls through to it.
+function runtimeState(row: unknown): RuntimeState | null {
+  if (!row || typeof row !== 'object') {
+    return null
+  }
+
+  const { connected, status } = row as Record<string, unknown>
+
+  if (connected === true && status === 'connected') {
+    return 'connected'
+  }
+
+  return connected === false && status === 'connecting' ? 'connecting' : null
+}
+
+// Reading the gateway's cached state avoids a second connection and tool listing.
+// Older/unavailable gateways fall back to the existing probe path.
+async function runtimeStates(profile: string): Promise<Map<string, RuntimeState> | null> {
+  try {
+    const { servers } = (await mcpServerStatus(profile)) as { servers?: unknown }
+    const states = new Map<string, RuntimeState>()
+
+    for (const row of Array.isArray(servers) ? servers : []) {
+      const state = runtimeState(row)
+      const name = (row as { name?: unknown } | null)?.name
+
+      if (state && typeof name === 'string') {
+        states.set(name, state)
+      }
+    }
+
+    return states
+  } catch {
+    return null
+  }
+}
+
 async function sweep(): Promise<void> {
   const epoch = sweepEpoch
-  const profileKey = normalizeProfileKey($activeGatewayProfile.get())
+  const profile = $activeGatewayProfile.get()
+  const profileKey = normalizeProfileKey(profile)
 
   let config: Record<string, unknown>
 
@@ -163,13 +211,18 @@ async function sweep(): Promise<void> {
     return
   }
 
-  if (epoch !== sweepEpoch) {
+  if (epoch !== sweepEpoch || $gatewayState.get() !== 'open') {
     return
   }
 
   // getServers drops non-object entries (a bare `name:` in config.yaml parses
   // as `null`), so isUrlServer below never reads `.url` off a null entry.
   const servers = getServers(config)
+  const states = await runtimeStates(profile)
+
+  if (epoch !== sweepEpoch || $gatewayState.get() !== 'open') {
+    return
+  }
 
   for (const [name, server] of Object.entries(servers)) {
     if (!isUrlServer(server)) {
@@ -179,6 +232,19 @@ async function sweep(): Promise<void> {
     // A profile switch or gateway drop mid-sweep stops the remaining probes.
     if (epoch !== sweepEpoch || $gatewayState.get() !== 'open') {
       return
+    }
+
+    // Live sessions are healthy; let an in-progress connection finish on its own.
+    const state = states?.get(name)
+
+    if (state === 'connected') {
+      recordResult(profileKey, name, 'ok')
+
+      continue
+    }
+
+    if (state === 'connecting') {
+      continue
     }
 
     const key = probeKey(name, server, profileKey)
@@ -255,6 +321,7 @@ export function startMcpHealthChecker(): void {
     if (state === 'open') {
       arm()
     } else {
+      sweepEpoch += 1
       disarm()
     }
   })

@@ -38,6 +38,10 @@ const mocks = vi.hoisted(() => {
   }
 })
 
+vi.mock('@/app/capabilities/connectors/data/rpc', () => ({
+  mcpServerStatus: vi.fn().mockRejectedValue(new Error('runtime status unavailable'))
+}))
+
 vi.mock('@/hermes', () => ({
   getHermesConfigRecord: mocks.getHermesConfigRecord,
   setMcpServerEnabled: mocks.setMcpServerEnabled,
