@@ -1,8 +1,9 @@
 import { describe, expect, it, vi } from 'vitest'
 
 import { BackendDialClaims } from './backend-dial-claim'
-import { backendScopeKey, parseBackendScopeKey } from './connection-registry'
+import { backendScopeKey, parseBackendScopeKey, resolveRegistryLocalRoute } from './connection-registry'
 import { resolveDesktopConnectionRequest } from './desktop-profile'
+import { primaryDialClaimKey } from './primary-boot-join'
 
 describe('BackendDialClaims (#90812)', () => {
   it('coalesces two concurrent dials for the same (connectionId, profile) onto ONE backend spawn', async () => {
@@ -139,4 +140,56 @@ describe('resolved window routes share one dial claim (#90812)', () => {
       expect(other).toHaveBeenCalledTimes(1)
     }
   )
+})
+
+describe("the registry's local entry never shares a claim with a remote primary", () => {
+  const remotePrimary = { baseUrl: 'https://gateway.example' }
+  const localChild = { baseUrl: 'http://127.0.0.1:53150' }
+
+  // The app-wide route is remote: ensureBackend('default') answers the remote
+  // primary, ensureRegistryBackend('local', 'default') its forced-local child.
+  it.each(['local dial first', 'primary dial first'])('each dial gets its own backend (%s)', async order => {
+    const claims = new BackendDialClaims(() => true)
+    const release: (() => void)[] = []
+
+    const slow = (backend: { baseUrl: string }) =>
+      vi.fn(() => new Promise<{ baseUrl: string }>(resolve => release.push(() => resolve(backend))))
+
+    const dialLocal = slow(localChild)
+    const dialPrimary = slow(remotePrimary)
+    const local = () => claims.run(claims.keyFor('local', 'default'), dialLocal)
+    const primary = () => claims.run(primaryDialClaimKey(claims.keyFor(null, 'default'), false), dialPrimary)
+    const dials = order === 'local dial first' ? [local(), primary()] : [primary(), local()].reverse()
+
+    release.forEach(finish => finish())
+
+    expect(await Promise.all(dials)).toEqual([localChild, remotePrimary])
+    expect(dialLocal).toHaveBeenCalledTimes(1)
+    expect(dialPrimary).toHaveBeenCalledTimes(1)
+  })
+
+  it('claims the forced-local child under its pool key, the key the post-resume redial claims', () => {
+    const claims = new BackendDialClaims(() => true)
+
+    expect(claims.keyFor('local', 'work')).toBe(resolveRegistryLocalRoute('work', { globalRemote: true }).poolKey)
+    expect(claims.keyFor('local', null)).toBe('conn:local::default')
+    expect(parseBackendScopeKey(claims.keyFor('local', 'work'))).toEqual({ connectionId: 'local', profile: 'work' })
+  })
+
+  it('keeps the shared claim wherever the local entry delegates to the primary route', () => {
+    // A local primary, and a profile with its own remote override under a remote primary.
+    const overridden = new BackendDialClaims(
+      () => true,
+      profile => profile === 'work'
+    )
+
+    expect(new BackendDialClaims().keyFor('local', 'work')).toBe('work')
+    expect(overridden.keyFor('local', 'work')).toBe('work')
+    expect(overridden.keyFor('local', 'other')).toBe('conn:local::other')
+
+    const claims = new BackendDialClaims(() => true)
+
+    expect(claims.keyFor(null, 'work')).toBe(backendScopeKey(null, 'work'))
+    expect(claims.keyFor('office-ssh', 'work')).toBe(backendScopeKey('office-ssh', 'work'))
+  })
 })

@@ -1852,7 +1852,7 @@ function registerMediaProtocol(): void {
     // reconnect dial for the same (connectionId, profile) scope; coalescing
     // here avoids bootstrapping a second SSH tunnel / remote dashboard.
     resolveRemoteConnection: ({ connectionId, profile }) =>
-      backendDialClaims.run(backendScopeKey(connectionId, profile), () =>
+      backendDialClaims.run(backendDialClaims.keyFor(connectionId, profile), () =>
         connectionId ? ensureRegistryBackend(connectionId, profile) : ensureBackend(profile)
       )
   })
@@ -1892,7 +1892,7 @@ const registryDispatchRevalidation = new RemoteRevalidationCoordinator()
 // backend ensure IPC and double-dial a pooled SSH backend. Main owns backend
 // lifecycles, so concurrent dials for one (connectionId, profile) scope
 // coalesce here — the second caller awaits the first spawn's result.
-const backendDialClaims = new BackendDialClaims()
+const backendDialClaims = new BackendDialClaims(globalRemoteActive, profileHasRemoteOverride)
 // True while connection-config:apply soft-rehomes the primary — suppresses the
 // backend-exit toast so an intentional kill doesn't look like a crash.
 let softRehomeInProgress = false
@@ -9275,7 +9275,7 @@ async function ensureTerminalBackend(webContentsId: number) {
   // reconnect dial for the same (connectionId, profile) scope; coalescing
   // here avoids bootstrapping a second SSH tunnel / remote dashboard.
   if (windowRoute?.registryScoped && windowRoute.connectionId) {
-    return backendDialClaims.run(backendScopeKey(windowRoute.connectionId, windowRoute.profile), () =>
+    return backendDialClaims.run(backendDialClaims.keyFor(windowRoute.connectionId, windowRoute.profile), () =>
       ensureRegistryBackend(windowRoute.connectionId, windowRoute.profile)
     )
   }
@@ -13808,7 +13808,7 @@ async function connectDesktopProfileRoute(route: DesktopProfileRoute, sender?: E
   // both land here. The claim key mirrors ensureBackend()'s own profile
   // normalization so every spelling of the primary coalesces onto one dial.
   const inheritsPrimary = !route.connectionId && inherits
-  const scopeKey = primaryDialClaimKey(backendScopeKey(route.connectionId, route.profile), inheritsPrimary)
+  const scopeKey = primaryDialClaimKey(backendDialClaims.keyFor(route.connectionId, route.profile), inheritsPrimary)
 
   const connection = await backendDialClaims.run(scopeKey, () =>
     route.connectionId
@@ -14699,7 +14699,7 @@ async function enumerateRegistryAgentSources(registry = readDesktopConnectionsRe
             // bootstrapping a second SSH tunnel / remote dashboard.
             const descriptor: any = await withEnumerationDeadline(
               Promise.resolve(
-                backendDialClaims.run(backendScopeKey(connection.id, null), () =>
+                backendDialClaims.run(backendDialClaims.keyFor(connection.id, null), () =>
                   ensureRegistryBackend(connection.id, null)
                 )
               ),
@@ -14922,7 +14922,7 @@ ipcMain.handle('hermes:connections:update-all', async (_event, payload) => {
 
         // Claim-guarded (#90812): coalesce with a concurrent renderer dial
         // for the same connection instead of bootstrapping a second backend.
-        const descriptor: any = await backendDialClaims.run(backendScopeKey(connection.id, null), () =>
+        const descriptor: any = await backendDialClaims.run(backendDialClaims.keyFor(connection.id, null), () =>
           ensureRegistryBackend(connection.id, null)
         )
 
@@ -15759,7 +15759,7 @@ async function dispatchRegistryApiRequest(
   // passive read would otherwise inherit its "no warm backend" rejection.
   const connection: any = request?.passive
     ? await ensureRegistryBackend(registryConnectionId, routeProfile, '', { passive: true })
-    : await backendDialClaims.run(backendScopeKey(registryConnectionId, routeProfile), () =>
+    : await backendDialClaims.run(backendDialClaims.keyFor(registryConnectionId, routeProfile), () =>
         ensureRegistryBackend(registryConnectionId, routeProfile)
       )
 
@@ -16890,7 +16890,7 @@ const terminalIpc = registerTerminalIpc({
   getSshConnectionState: scope => sshConnections.get(scope),
   gatewayTarget: owner => terminalGatewayTarget(owner, readDesktopConnectionsRegistry(), sshConnections),
   ensureGatewayBackend: owner =>
-    backendDialClaims.run(backendScopeKey(owner.connectionId, owner.profile), () =>
+    backendDialClaims.run(backendDialClaims.keyFor(owner.connectionId, owner.profile), () =>
       ensureRegistryBackend(owner.connectionId, owner.profile)
     )
 })

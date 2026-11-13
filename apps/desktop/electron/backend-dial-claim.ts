@@ -2,7 +2,7 @@
  * backend-dial-claim.ts
  *
  * Single-owner reconnect/dial claim for backend spawns, keyed by the pool
- * scope key from backendScopeKey(connectionId, profile) (#90812).
+ * key of the backend a (connectionId, profile) dial answers: keyFor() (#90812).
  *
  * Why this exists: reconnectGateway()'s in-flight lock lives at renderer
  * module scope, so it only dedupes reconnects INSIDE one window. Two windows
@@ -17,8 +17,44 @@
  * unsettled — both outcomes release it, so a failed dial is never cached and
  * the next reconnect attempt runs fresh (fail closed, not latched).
  */
+import { backendScopeKey, LOCAL_CONNECTION_ID, resolveRegistryLocalRoute } from './connection-registry'
+
 export class BackendDialClaims {
   readonly #inflightByKey = new Map<string, Promise<unknown>>()
+  readonly #globalRemote: () => boolean
+  readonly #profileRemoteOverride: (profile: string) => unknown
+
+  /** The live v1 routing facts resolveRegistryLocalRoute() decides on; the defaults mean a local primary. */
+  constructor(
+    globalRemote: () => boolean = () => false,
+    profileRemoteOverride: (profile: string) => unknown = () => false
+  ) {
+    this.#globalRemote = globalRemote
+    this.#profileRemoteOverride = profileRemoteOverride
+  }
+
+  /**
+   * The claim key for a dial of (connectionId, profile): the pool key of the
+   * backend that dial answers. backendScopeKey('local', p) is the bare key the
+   * primary route's own dial of `p` claims. While that route is remote the
+   * registry's 'local' entry answers its forced-local child instead, so it
+   * claims under the child's `conn:local::<profile>` pool key; on the shared
+   * bare key, whichever of the two dials arrived second got the other backend.
+   */
+  keyFor(connectionId: null | string | undefined, profile: null | string | undefined): string {
+    const scopeKey = backendScopeKey(connectionId, profile)
+
+    if (String(connectionId ?? '').trim() !== LOCAL_CONNECTION_ID) {
+      return scopeKey
+    }
+
+    const route = resolveRegistryLocalRoute(profile, {
+      globalRemote: this.#globalRemote(),
+      profileRemoteOverride: Boolean(this.#profileRemoteOverride(scopeKey))
+    })
+
+    return route.delegate ? scopeKey : route.poolKey
+  }
 
   /** Whether a dial for this key is currently in flight (test/diagnostic seam). */
   inFlight(key: string): boolean {
