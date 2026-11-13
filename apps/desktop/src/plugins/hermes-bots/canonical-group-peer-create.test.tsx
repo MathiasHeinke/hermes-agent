@@ -3,6 +3,7 @@ import type * as HermesSdk from '@hermes/plugin-sdk'
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 
+import { canonicalMemberName } from './canonical-group-activity'
 import {
   answerGroupRequests, CANONICAL_GROUP_CAPABILITIES, DISBAND_FAILURES, PEER_HOME as HOME, PEER_MINI as MINI, PEER_REGISTERED, peerInvitation, peerRosterRow,
   STANDALONE_GROUP_CAPABILITIES, strictGroupCreation
@@ -460,4 +461,30 @@ it.each([
   expect(result.roster[0]).toMatchObject({ member_id: 'default', profile: 'default', handle })
   expect(result.roster[0].display_name).toBe(expected)
   expect(result.roster[1]).toEqual({ member_id: 'reviewer', profile: 'reviewer', handle: 'reviewer', target: { kind: 'local', profile: 'reviewer' } })
+})
+
+it('seats a Bot on this computer under its title, the name the Bots list shows for it', async () => {
+  gateways()
+  const onCreated = vi.fn()
+
+  const titled: RosterRow[] = [
+    { name: 'triage', connectionId: 'local', ui_meta: { 'hermes-bots': { title: 'Inbox Triage' } } },
+    { name: 'reviewer', connectionId: 'local', title: 'Code Reviewer', display_name: 'Rev' },
+    { name: 'beta', connectionId: 'local' }]
+
+  const view = render(<CreateGroupChatDialog onClose={vi.fn()} onCreated={onCreated} open roster={titled} />)
+  await waitFor(() => expect(request.mock.calls.some(call => call[0]?.connectionId === 'local')).toBe(true))
+  await act(async () => {})
+  titled.forEach(bot => fireEvent.click(box(view.baseElement.querySelector(`[data-bot-face="${bot.name}"]`)!)))
+  fireEvent.change(screen.getByRole('textbox', { name: 'Group name' }), { target: { value: 'Team' } })
+  await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Create group (3)' })) })
+  await waitFor(() => expect(onCreated).toHaveBeenCalledOnce())
+
+  const { members } = request.mock.calls.find(call => call[1] === 'groups.create')![2]
+  expect(members).toEqual([
+    { member_id: 'triage', profile: 'triage', handle: 'triage', display_name: 'Inbox Triage', target: { kind: 'local', profile: 'triage' } },
+    { member_id: 'reviewer', profile: 'reviewer', handle: 'reviewer', display_name: 'Code Reviewer', target: { kind: 'local', profile: 'reviewer' } },
+    { member_id: 'beta', profile: 'beta', handle: 'beta', target: { kind: 'local', profile: 'beta' } }])
+  // What the room's roster, typing rows and authors print.
+  expect(members.map(canonicalMemberName)).toEqual(['Inbox Triage', 'Code Reviewer', 'beta'])
 })

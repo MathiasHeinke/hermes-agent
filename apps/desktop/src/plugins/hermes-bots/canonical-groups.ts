@@ -201,8 +201,11 @@ function connectionSuffix(member: GroupMember, rivals: GroupMember[]) {
   return mine[rung < 0 ? 2 : rung]
 }
 
-/** A Bot's own name: its title, else its name (a default profile reads "Hermes"). */
-const botLabel = (member: GroupMember) => String(member.title || member.display_name || '').trim() ||
+/** The name a Bot was given: its title, else its profile's display name. */
+const givenName = (member: GroupMember) => String(member.title || member.display_name || '').trim()
+
+/** A Bot's own name: the one it was given, else its profile's (a default profile reads "Hermes"). */
+const botLabel = (member: GroupMember) => givenName(member) ||
   (member.name.trim().toLowerCase() === 'default' ? 'Hermes' : member.name)
 
 /** A peer's name in the room: its own, then the connection it runs on, so two computers' default
@@ -223,7 +226,7 @@ function rosterEntry(member: GroupMember, members: GroupMember[], pin: Canonical
   if (!pin) {
     const profile = member.route?.targetProfile ?? member.targetProfile ?? member.name
     // Saved on the gateway and read from any computer: "This device" would be wrong elsewhere.
-    const display = member.display_name || (mixed && profile === 'default' && base !== 'hermes' ? botLabel(member) : undefined)
+    const display = givenName(member) || (mixed && profile === 'default' && base !== 'hermes' ? botLabel(member) : undefined)
 
     return { member_id: profile, profile, handle: base, target: { kind: 'local', profile },
       ...(display ? { display_name: display } : {}) }
