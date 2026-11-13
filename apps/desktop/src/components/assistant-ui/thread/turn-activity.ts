@@ -1,5 +1,5 @@
 import { QUESTION_CARD_TOOLS } from '@/lib/chat-messages'
-import { isSilentTool } from '@/lib/tool-render-class'
+import { isCardTool, isSilentTool } from '@/lib/tool-render-class'
 
 /**
  * Seconds of silence before an unnamed wait earns a row of its own.
@@ -29,6 +29,11 @@ const settled = (part: ActivityPart): boolean => part.result !== undefined || pa
 const isQuestionCard = (part: ActivityPart): boolean =>
   part.type === 'tool-call' && QUESTION_CARD_TOOLS.has(part.toolName ?? '')
 
+// With the tool feed off (`display.tool_progress`) only cards and file edits
+// keep a surface; a read, a search or a command runs without a row.
+const undrawn = (part: ActivityPart, toolFeedShown: boolean): boolean =>
+  !toolFeedShown && part.type === 'tool-call' && !isCardTool(part.toolName ?? '')
+
 /**
  * What the tail message has produced so far, as a value that changes exactly
  * when the turn makes visible progress.
@@ -39,7 +44,11 @@ const isQuestionCard = (part: ActivityPart): boolean =>
  * signature without it reads a finished tool call as more of the same silence
  * and dates the gap after it from whenever the call started.
  */
-export function activitySignature(content: readonly ActivityPart[], reasoningShown = true): string {
+export function activitySignature(
+  content: readonly ActivityPart[],
+  reasoningShown = true,
+  toolFeedShown = true
+): string {
   let parts = 0
   let textLength = 0
   let settledTools = 0
@@ -47,7 +56,8 @@ export function activitySignature(content: readonly ActivityPart[], reasoningSho
   for (const part of content) {
     // Reasoning the transcript does not draw (the guided chat, or the user
     // turned it off) is the model thinking in silence, not progress on screen.
-    if (!reasoningShown && part.type === 'reasoning') {
+    // Nor is a tool call whose row the hidden feed leaves out.
+    if ((!reasoningShown && part.type === 'reasoning') || undrawn(part, toolFeedShown)) {
       continue
     }
 
@@ -72,10 +82,16 @@ export function activitySignature(content: readonly ActivityPart[], reasoningSho
  * spinner under it would count the same seconds twice. Silent tools don't:
  * `todo` is hoisted to its own panel and a reaction's UI is the emoji landing
  * on the bubble, so neither leaves anything on screen to time — a wait on one
- * of those is as unnarrated as a wait on nothing at all.
+ * of those is as unnarrated as a wait on nothing at all. The same goes for a
+ * call whose row the hidden tool feed does not draw.
  */
-export function toolNarratesWait(content: readonly ActivityPart[]): boolean {
+export function toolNarratesWait(content: readonly ActivityPart[], toolFeedShown = true): boolean {
   return content.some(
-    part => part.type === 'tool-call' && !settled(part) && !isSilentTool(part.toolName ?? '') && !isQuestionCard(part)
+    part =>
+      part.type === 'tool-call' &&
+      !settled(part) &&
+      !isSilentTool(part.toolName ?? '') &&
+      !isQuestionCard(part) &&
+      !undrawn(part, toolFeedShown)
   )
 }

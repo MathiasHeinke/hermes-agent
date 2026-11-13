@@ -21,6 +21,7 @@ import { sessionAwaitingInput } from '@/store/prompts'
 import { parseModelLoadWait, sessionProviderWait } from '@/store/provider-wait'
 import { $showReasoning } from '@/store/reasoning-disclosure'
 import { $currentModel, $currentProvider } from '@/store/session'
+import { $showToolActivity } from '@/store/tool-activity'
 import { type DraftingTool, sessionDraftingTool } from '@/store/tool-drafting'
 import type { LocalModelLoadProgress } from '@/types/hermes'
 
@@ -367,9 +368,10 @@ const TurnActivityRow: FC<TurnActivityRowProps> = ({ active, elapsed, hint, loca
 // so that per-token updates re-render only this leaf, not the whole
 // AssistantMessage subtree.
 export const TurnActivityIndicator: FC<{ thinking?: boolean }> = ({ thinking = false }) => {
-  // Same rule the reasoning disclosure renders by (message-parts.tsx).
+  // Same rules the reasoning disclosure and the tool feed render by (message-parts.tsx).
   const showReasoning = useStore($showReasoning)
-  const activity = useAuiState(s => activitySignature(s.message.content, showReasoning))
+  const showToolActivity = useStore($showToolActivity)
+  const activity = useAuiState(s => activitySignature(s.message.content, showReasoning, showToolActivity))
 
   // Timestamp of the last visible progress, held from the moment the quiet
   // spell qualifies. Holding the timestamp (not a boolean) is what lets the
@@ -382,8 +384,9 @@ export const TurnActivityIndicator: FC<{ thinking?: boolean }> = ({ thinking = f
   // A tool run at the tail already narrates the wait — its summary counts the
   // calls, its ticker names the current one, and it carries its own timer. A
   // second spinner under that adds a line and says nothing new. Silent tools
-  // (`todo`, reactions) render nothing, so they narrate nothing.
-  const toolNarrating = useAuiState(s => toolNarratesWait(s.message.content))
+  // (`todo`, reactions) render nothing, so they narrate nothing; neither does
+  // a call the hidden tool feed leaves out.
+  const toolNarrating = useAuiState(s => toolNarratesWait(s.message.content, showToolActivity))
 
   // Streaming can lead busy by one view flush on the first turn of a fresh
   // chat. Honor that lead only while this session still has an armed turn

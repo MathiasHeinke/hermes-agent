@@ -37,6 +37,17 @@ describe('activitySignature', () => {
 
     expect(activitySignature(parts)).toBe(activitySignature([...parts]))
   })
+
+  it('ignores calls the hidden tool feed does not draw, but not the cards it still does', () => {
+    // display.tool_progress: off. A run of quick hidden calls is silence on
+    // screen; counting each one as progress would keep re-arming the quiet
+    // window and the row would never come up.
+    const quiet = activitySignature([text('working')], true, false)
+
+    expect(activitySignature([text('working'), call('terminal', false)], true, false)).toBe(quiet)
+    expect(activitySignature([text('working'), call('terminal', true)], true, false)).toBe(quiet)
+    expect(activitySignature([text('working'), call('patch', true)], true, false)).not.toBe(quiet)
+  })
 })
 
 describe('toolNarratesWait', () => {
@@ -66,5 +77,12 @@ describe('toolNarratesWait', () => {
     // Tail-part-only detection missed this: a turn that starts prose while a
     // call is still running showed the row under the tool's own timer.
     expect(toolNarratesWait([call('terminal', false), text('meanwhile')])).toBe(true)
+  })
+
+  it('does not defer to a call whose row the hidden tool feed does not draw', () => {
+    expect(toolNarratesWait([text('working'), call('terminal', false)], false)).toBe(false)
+    // File edits and cards keep their surface with the feed off.
+    expect(toolNarratesWait([call('patch', false)], false)).toBe(true)
+    expect(toolNarratesWait([call('delegate_task', false)], false)).toBe(true)
   })
 })
