@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import errno
 import importlib.util
 import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -207,6 +209,89 @@ def test_docker_config_migrate_restores_backups_when_version_does_not_advance(
 
     assert config_path.read_text(encoding="utf-8") == original_config
     assert env_path.read_text(encoding="utf-8") == original_env
+
+
+def _short_copy(src, dst, *args, **kwargs):
+    """shutil.copy2 on a disk that fills up mid-copy: half the bytes land, then ENOSPC."""
+    data = Path(src).read_bytes()
+    Path(dst).write_bytes(data[: len(data) // 2])
+    raise OSError(errno.ENOSPC, "No space left on device", str(dst))
+
+
+def _seed_v12_home(module, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[Path, bytes]:
+    config_path = tmp_path / "config.yaml"
+    env_path = tmp_path / ".env"
+    config_path.write_text(
+        yaml.safe_dump({"_config_version": 12, "gateway": {"provider": "telegram"}}), encoding="utf-8")
+    env_path.write_text("TELEGRAM_BOT_TOKEN=test-token\n", encoding="utf-8")
+    monkeypatch.setattr(
+        module, "read_config_version_stamp",
+        lambda *, raise_on_parse_error=False: (12, DEFAULT_CONFIG["_config_version"]))
+    monkeypatch.setattr(module, "get_config_path", lambda: config_path)
+    monkeypatch.setattr(module, "get_env_path", lambda: env_path)
+    return {path: path.read_bytes() for path in (config_path, env_path)}
+
+
+def test_docker_config_migrate_restore_on_a_full_disk_keeps_the_live_files(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The disk fills up during the migration: the migration fails and the restore copy runs out
+    of space too. Copying a backup straight onto the live file truncates it first, so the failed
+    restore left config.yaml and .env cut off."""
+    module = _load_script_module()
+    before = _seed_v12_home(module, tmp_path, monkeypatch)
+
+    def _migrate_fills_the_disk(*, interactive: bool, quiet: bool):
+        monkeypatch.setattr(shutil, "copy2", _short_copy)
+        raise OSError(errno.ENOSPC, "No space left on device")
+
+    monkeypatch.setattr(module, "migrate_config", _migrate_fills_the_disk)
+
+    with pytest.raises(OSError):
+        module.main()
+
+    assert {path: path.read_bytes() for path in before} == before
+    assert not list(tmp_path.glob(".*.restore-*"))
+    captured = capsys.readouterr()
+    assert "could not restore" in captured.err
+    assert "restored" not in captured.out
+
+
+def test_docker_config_migrate_restore_keeps_a_symlinked_config(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The restore renames a staged copy into place; it must land on the link's real file
+    instead of swapping the link for a regular file."""
+    module = _load_script_module()
+    real_dir = tmp_path / "managed"
+    real_dir.mkdir()
+    real_config = real_dir / "config.yaml"
+    original = yaml.safe_dump({"_config_version": 12, "gateway": {"provider": "telegram"}})
+    real_config.write_text(original, encoding="utf-8")
+    config_path = tmp_path / "config.yaml"
+    try:
+        config_path.symlink_to(real_config)
+    except OSError:
+        pytest.skip("symlinks are not available")
+    env_path = tmp_path / ".env"
+    monkeypatch.setattr(
+        module, "read_config_version_stamp",
+        lambda *, raise_on_parse_error=False: (12, DEFAULT_CONFIG["_config_version"]))
+    monkeypatch.setattr(module, "get_config_path", lambda: config_path)
+    monkeypatch.setattr(module, "get_env_path", lambda: env_path)
+
+    def _failing_migrate(*, interactive: bool, quiet: bool):
+        real_config.write_text("gateway: {}\n", encoding="utf-8")
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(module, "migrate_config", _failing_migrate)
+
+    with pytest.raises(RuntimeError, match="boom"):
+        module.main()
+
+    assert config_path.is_symlink()
+    assert real_config.read_text(encoding="utf-8") == original
+    assert not list(real_dir.glob(".*.restore-*"))
 
 
 def test_docker_config_migrate_second_boot_preserves_env_byte_for_byte(tmp_path: Path) -> None:

@@ -2,6 +2,7 @@
 """Run Docker boot-time config migrations safely."""
 from __future__ import annotations
 
+import os
 import shutil
 import sys
 from pathlib import Path
@@ -19,7 +20,7 @@ from hermes_cli.config_migrations import (
     SUPPORT_FLOOR_VERSION,
     support_floor_message,
 )
-from utils import env_var_enabled
+from utils import atomic_replace, env_var_enabled, mkstemp_beside
 
 
 def _backup_existing(paths: Iterable[Path]) -> dict[Path, Path]:
@@ -34,11 +35,30 @@ def _backup_existing(paths: Iterable[Path]) -> dict[Path, Path]:
 
 
 def _restore_backups(backups: dict[Path, Path]) -> list[Path]:
+    """Put each backup back; a file counts as restored only once it has replaced the original.
+
+    The copy is staged beside the original and renamed over it: copying straight onto the live
+    file truncates it first, so a copy that fails (full disk) would leave it cut off.
+    """
     restored: list[Path] = []
     for original, backup in backups.items():
         if not backup.is_file():
             continue
-        shutil.copy2(backup, original)
+        staged: str | None = None
+        try:
+            fd, staged = mkstemp_beside(original, prefix=f".{original.name}.restore-")
+            os.close(fd)
+            shutil.copy2(backup, staged)
+            # A full disk can surface only at flush time; the rename must not publish that.
+            with open(staged, "r+b") as handle:
+                os.fsync(handle.fileno())
+            atomic_replace(staged, original)
+        except OSError as exc:
+            if staged is not None:
+                Path(staged).unlink(missing_ok=True)
+            print(f"[config-migrate] ERROR: could not restore {original}: {exc}; "
+                  f"its pre-migration copy is {backup}", file=sys.stderr)
+            continue
         restored.append(original)
     return restored
 
