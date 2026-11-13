@@ -2,7 +2,7 @@ import { EventEmitter } from 'node:events'
 
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { MacStrategy, type MacStrategyDeps, prepareMacInstall } from './mac'
+import { MAC_INSTALL_PREPARE_TIMEOUT_MS, MacStrategy, type MacStrategyDeps, prepareMacInstall } from './mac'
 
 function fixture() {
   const events: string[] = []
@@ -166,6 +166,33 @@ describe('native signature verification', () => {
     const timeout = expect(prepareMacInstall(native, 2000)).rejects.toThrow('timed out')
     await vi.advanceTimersByTimeAsync(2000)
     await timeout
+    expect(native.listenerCount('error')).toBe(0)
+    expect(native.listenerCount('update-downloaded')).toBe(0)
+  })
+
+  it('keeps waiting for a slow native verification by default and still bounds a hung one', async () => {
+    vi.useFakeTimers()
+    const native = Object.assign(new EventEmitter(), { checkForUpdates: vi.fn() })
+    let outcome = 'pending'
+
+    const slow = prepareMacInstall(native).then(
+      () => {
+        outcome = 'ready'
+      },
+      (error: Error) => {
+        outcome = error.message
+      }
+    )
+
+    await vi.advanceTimersByTimeAsync(5 * 60_000)
+    expect(outcome).toBe('pending')
+    native.emit('update-downloaded')
+    await slow
+    expect(outcome).toBe('ready')
+
+    const hung = expect(prepareMacInstall(native)).rejects.toThrow('timed out')
+    await vi.advanceTimersByTimeAsync(MAC_INSTALL_PREPARE_TIMEOUT_MS)
+    await hung
     expect(native.listenerCount('error')).toBe(0)
     expect(native.listenerCount('update-downloaded')).toBe(0)
   })

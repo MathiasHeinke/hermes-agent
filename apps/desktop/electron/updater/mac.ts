@@ -110,8 +110,18 @@ export interface NativeMacUpdater {
   checkForUpdates(): void
 }
 
+/**
+ * A backstop for a hung Squirrel, not a deadline: Squirrel downloads, unpacks and verifies the
+ * whole signed app, which takes minutes on a slow or memory-pressed Mac, and reports a real
+ * failure through 'error'. An update abandoned here is still installed by ShipIt on the next quit.
+ */
+export const MAC_INSTALL_PREPARE_TIMEOUT_MS = 20 * 60_000
+
 /** Download completion alone does not mean Squirrel accepted the signature. */
-export function prepareMacInstall(native: NativeMacUpdater, timeoutMs: number = 120_000): Promise<void> {
+export function prepareMacInstall(
+  native: NativeMacUpdater,
+  timeoutMs: number = MAC_INSTALL_PREPARE_TIMEOUT_MS
+): Promise<void> {
   return new Promise<void>((resolve: () => void, reject: (error: Error) => void): void => {
     const cleanup = (): void => {
       clearTimeout(timer)
