@@ -894,6 +894,17 @@ def _owner_db_for(request: Request, profile: Optional[str]):
     return getattr(authority, "db", None)
 
 
+def _has_unowned_sessions(profile: Optional[str]) -> bool:
+    """Read-only probe for legacy ``profile_name = NULL`` rows. A store that cannot be read
+    answers True, so the caller keeps the locked path and that path's own error."""
+    try:
+        return _with_db(profile, lambda db: db._read_one(
+            "SELECT 1 FROM sessions WHERE profile_name IS NULL OR TRIM(profile_name) = '' LIMIT 1"
+        ) is not None, read_only=True)
+    except (HTTPException, sqlite3.Error):
+        return True
+
+
 @manage_router.post("/api/sessions/owner-backfill")
 async def backfill_session_owner_profiles(body: SessionOwnerBackfill, request: Request):
     """Stamp legacy ``profile_name = NULL`` rows with the serving-profile identity.
@@ -918,6 +929,10 @@ async def backfill_session_owner_profiles(body: SessionOwnerBackfill, request: R
             # A live gateway owns this store: it is the only writer (the offline maintenance lock
             # would 409 every Desktop boot), so the idempotent stamp runs on its own connection.
             stamped = await asyncio.to_thread(owner_db.backfill_null_session_profiles, stamp)
+        elif not await asyncio.to_thread(_has_unowned_sessions, body.profile):
+            # No composed gateway here, but one in another process may hold the maintenance lock
+            # for as long as it runs: with nothing to stamp, do not ask for it.
+            stamped = 0
         else:
             stamped = await asyncio.to_thread(
                 _with_db, body.profile, lambda db: db.backfill_null_session_profiles(stamp),
