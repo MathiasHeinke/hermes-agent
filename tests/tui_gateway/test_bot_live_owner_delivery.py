@@ -35,6 +35,8 @@ def test_refused_input_reports_a_failed_terminal_outcome():
         "_clear_inflight_turn": noop,
         # Hosted room member sessions drop their bot_room slot at turn end (#106847); a canonical chat is not one.
         "_release_hosted_room_turn_slot": noop,
+        # The release hands back a steer the finalizer no longer read (#66704); this agent has no steer buffer.
+        "_hand_back_unread_steer": noop,
         "_retire_turn_marker": lambda *args: retired.append(args),
         "_emit_settled_session_info": noop,
         "_routing_provenance_db": lambda _session: contextlib.nullcontext(None),

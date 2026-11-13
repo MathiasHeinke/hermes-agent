@@ -422,6 +422,25 @@ def _after_complete_turn(sid: str, session: dict, st: _TurnRun, raw: Any) -> Non
             logger.warning("voice TTS dispatch failed: %s", e)
 
 
+def _hand_back_unread_steer(session: dict, st: _TurnRun) -> None:
+    """Under ``history_lock``, where the turn gives up ``running``: hand back what the steer buffer
+    still holds.
+
+    The agent drains that buffer for the last time in the turn finalizer, and the session counts as
+    running for a good while after (``message.complete``, the goal judge, post-turn hooks). A steer
+    accepted in between waited on the idle agent for some later turn (#66704). It joins the leftover
+    the post-turn follow-up queues as the next turn.
+    """
+    drain = getattr(st.agent, "_drain_leftover_steer", None)
+    late = drain() if callable(drain) else None
+    if not isinstance(late, str) or not late.strip():
+        return
+    if isinstance(st.result, dict):
+        st.result["pending_steer"] = "\n".join(filter(None, [st.result.get("pending_steer"), late]))
+    else:  # the turn raised: no result carries the text to the follow-up
+        _enqueue_prompt(session, late, session.get("transport"))
+
+
 def _dispatch_followup_turn(rid, sid: str, session: dict, prompt: Any, what: str, *,
                             on_done=None, on_error=None) -> None:
     """Chain one follow-up turn (caller set ``running``); on failure run ``on_error``, log,
@@ -1219,6 +1238,7 @@ def _run_prompt_submit(
                     session.pop("_turn_user_input", None)  # per turn: never leaks into the next one
                     if not st.error_retained:
                         _clear_inflight_turn(session)
+                    _hand_back_unread_steer(session, st)
                     _release_hosted_room_turn_slot(session)
                     if session.get(SESSION_KEY) is segments:
                         session.pop(SESSION_KEY)
