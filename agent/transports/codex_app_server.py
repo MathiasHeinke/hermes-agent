@@ -19,7 +19,7 @@ from typing import Any, Optional
 
 from agent.deadline import kill_process_tree
 from agent.transports.hermes_tools_mcp_server import HERMES_TOOLS_MCP_SERVER_NAME
-from tools.environments.local import hermes_subprocess_env
+from tools.environments.local import hermes_subprocess_env, served_profile_child_env
 
 MIN_CODEX_VERSION = (0, 125, 0)
 
@@ -102,7 +102,11 @@ class CodexAppServerClient:
         # GATEWAY_RELAY_* auth — none of which a coding subprocess has any use for. Route through the
         # centralized helper so Tier-1 + dynamic-internal secrets are always stripped while provider creds
         # still flow, matching the ACP client (#29157 sibling spawn-site gap).
-        spawn_env = hermes_subprocess_env(inherit_credentials=True)
+        # The base is the SERVED profile's env, not os.environ: one process serves several profiles,
+        # and the launch profile's keys must not authenticate another profile's executor. That base
+        # overlays the profile's whole .env, so the Tier-1 scrub runs over it.
+        spawn_env = hermes_subprocess_env(
+            inherit_credentials=True, base_env=served_profile_child_env(inherit_credentials=True))
         if env:
             spawn_env.update(env)
         if codex_home:

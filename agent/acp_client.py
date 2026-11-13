@@ -108,12 +108,15 @@ def _build_subprocess_env() -> dict[str, str]:
     # Lazy: the env policy imports hermes_cli.config, and provider plugins import this module
     # while hermes_cli.config is still initializing (discovery runs from it).
     from hermes_constants import apply_subprocess_home_env
-    from tools.environments.local import hermes_subprocess_env
+    from tools.environments.local import hermes_subprocess_env, served_profile_child_env
 
     # An ACP agent drives a model and needs LLM provider credentials; the central helper still
     # strips Tier-1 secrets (bot tokens, GitHub auth, infra).
     # See #29157.
-    env = hermes_subprocess_env(inherit_credentials=True)
+    # The base is the SERVED profile's env, not os.environ: the launch profile's keys must not
+    # authenticate another profile's agent. It overlays that profile's whole .env, hence the scrub.
+    env = hermes_subprocess_env(
+        inherit_credentials=True, base_env=served_profile_child_env(inherit_credentials=True))
     env["HOME"] = _resolve_home_dir()
     apply_subprocess_home_env(env)
     return env
