@@ -56,7 +56,9 @@ function resolveApiKeyPath(rawValue) {
   }
 
   const tempPath = path.join(os.tmpdir(), `hermes-notary-${Date.now()}-${process.pid}.p8`)
-  fs.writeFileSync(tempPath, value, 'utf8')
+  // Owner-only and exclusive: the key must not be readable by other users, and a
+  // file or symlink already at this path must never be written through.
+  fs.writeFileSync(tempPath, value, { encoding: 'utf8', mode: 0o600, flag: 'wx' })
   return {
     keyPath: tempPath,
     cleanup: () => {
