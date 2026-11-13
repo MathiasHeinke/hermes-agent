@@ -247,6 +247,30 @@ def test_profiles_default_subdir_is_skipped_with_warning(
     )
 
 
+def test_non_profile_dirs_do_not_abort_reconcile_for_real_profiles(
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A hidden dir (the staging tree of an interrupted ``hermes profile create``, which already
+    holds SOUL.md) or a dir whose name is no profile name is skipped; the profiles sorted after
+    it still get their slots and the reconcile log is still written."""
+    import logging
+    caplog.set_level(logging.WARNING)
+    scandir = tmp_path / "run-service"; scandir.mkdir()
+    _make_profile(tmp_path, ".coder.staging-4242", state=None)
+    _make_profile(tmp_path, "Bad Name", state=None)
+    _make_profile(tmp_path, "coder", state="running")
+
+    actions = reconcile_profile_gateways(
+        hermes_home=tmp_path, scandir=scandir, dry_run=False,
+    )
+
+    assert [a.profile for a in actions] == ["default", "coder"]
+    assert sorted(p.name for p in scandir.iterdir()) == ["gateway-coder", "gateway-default"]
+    assert (tmp_path / "logs" / "container-boot.log").exists()
+    assert any("Bad Name" in record.getMessage() for record in caplog.records)
+
+
 # ---------------------------------------------------------------------------
 # Dashboard-container role detection (skip reconcile on the dashboard)
 # ---------------------------------------------------------------------------

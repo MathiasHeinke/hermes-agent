@@ -71,9 +71,21 @@ def _named_profile_dirs(hermes_home: Path) -> list[tuple[str, Path]]:
     profiles_root = hermes_home / "profiles"
     if not profiles_root.is_dir():
         return []
+    from hermes_cli.service_manager import validate_profile_name
+
     found: list[tuple[str, Path]] = []
     for entry in sorted(profiles_root.iterdir()):
         if not entry.is_dir() or not (entry / "SOUL.md").exists():
+            continue
+        # A name _register_service would reject must not abort the pass for the profiles after it.
+        # Hidden dirs are Hermes' own, e.g. the staging tree an interrupted `profile create` leaves.
+        if entry.name.startswith("."):
+            log.info("profiles/%s/ is hidden, not a profile; skipping", entry.name)
+            continue
+        try:
+            validate_profile_name(entry.name)
+        except ValueError as exc:
+            log.warning("profiles/%s/ is not a profile (%s); skipping", entry.name, exc)
             continue
         # "default" is reserved for the root profile slot.
         if entry.name == "default":
