@@ -76,6 +76,22 @@ class FileStateRegistryUnitTests(unittest.TestCase):
         self.assertIn("sibling", warn.lower())
 
 
+    def test_late_partial_read_keeps_full_read_of_same_version(self):
+        """Two reads of one file in a parallel tool batch can reach the registry
+        out of order; the windowed one arriving last must not undo the full one."""
+        p = self._mk("one\ntwo\n")
+        file_state.record_read("A", p)
+        file_state.record_read("A", p, partial=True)
+        self.assertIsNone(file_state.check_stale("A", p))
+
+    def test_partial_read_of_changed_file_replaces_full_read(self):
+        p = self._mk("one\ntwo\n")
+        file_state.record_read("A", p)
+        changed = os.path.getmtime(p) + 5
+        os.utime(p, (changed, changed))
+        file_state.record_read("A", p, partial=True)
+        self.assertIn("partial view", file_state.check_stale("A", p))
+
     def test_lock_path_serializes_same_path(self):
         p = self._mk()
         events: list[tuple[str, int]] = []
@@ -262,6 +278,42 @@ class FileToolsIntegrationTests(unittest.TestCase):
         self.assertIn("sibling", err.lower())
         with open(p) as f:
             self.assertEqual(f.read(), "B wrote\n")
+
+    def test_full_read_survives_slower_partial_read_of_same_task(self):
+        """read_file registers with the registry after releasing its own tracker
+        lock, so a windowed read that started first can register last."""
+        p = self._write_seed("shared.txt", "one\ntwo\nthree\n")
+        at_registry = threading.Event()
+        full_read_done = threading.Event()
+        record_read = file_state.record_read
+
+        def delayed_partial(task_id, path, *, partial=False):
+            if partial:
+                at_registry.set()
+                self.assertTrue(full_read_done.wait(timeout=5.0), "full read did not finish")
+            record_read(task_id, path, partial=partial)
+
+        results: dict[str, dict] = {}
+
+        def windowed_read() -> None:
+            results["windowed"] = json.loads(read_file_tool(path=p, limit=1, task_id="agentA"))
+
+        with patch.object(file_state, "record_read", delayed_partial):
+            t = threading.Thread(target=windowed_read)
+            t.start()
+            try:
+                self.assertTrue(at_registry.wait(timeout=5.0), "windowed read did not reach the registry")
+                full = json.loads(read_file_tool(path=p, task_id="agentA"))
+            finally:
+                full_read_done.set()
+                t.join(timeout=5.0)
+        self.assertFalse(full.get("truncated"), full)
+        self.assertTrue(results["windowed"].get("truncated"), results)
+
+        w = json.loads(write_file_tool(path=p, content="merged\n", task_id="agentA"))
+        self.assertFalse(w.get("stale_write_blocked"), w)
+        with open(p) as f:
+            self.assertEqual(f.read(), "merged\n")
 
 
 

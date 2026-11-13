@@ -111,6 +111,11 @@ class FileStateRegistry:
         if mtime is None:
             return
         with self._state_lock:
+            # read_file registers after releasing its own tracker lock, so a slower
+            # windowed read can arrive after a full read of the same bytes.
+            previous = self._reads.get(task_id, {}).get(resolved)
+            if partial and previous is not None and previous[0] == float(mtime) and not previous[2]:
+                partial = False
             self._stamp(task_id, resolved, mtime, time.time(), partial)
 
     def note_write(self, task_id: str, resolved: str, *, mtime: Optional[float] = None) -> None:
